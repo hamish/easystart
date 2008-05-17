@@ -1,0 +1,207 @@
+<project xmlns:ivy="antlib:org.apache.ivy.ant" name="easyweb" default="deploy.functional.tests">
+    <property file="local.properties" />
+    <property name="appName" value="easyweb" />
+
+    <property name="build.dir" value="build" />
+    <property name="dist.dir" value="dist" />
+    <property name="build.main" value="${build.dir}/main" />
+    <property name="build.test" value="${build.dir}/test" />
+    <property name="build.instrumented" value="${build.dir}/instrumented" />
+    <property name="build.functional.test" value="${build.dir}/functionaltest" />
+    <property name="src.dir" value="src/main/java" />
+    <property name="test.dir" value="src/test/java" />
+    <property name="functional.test.dir" value="src/functional-tests/java" />
+    <property name="reports.dir" value="reports" />
+    <property name="reports.tests" value="reports/tests" />
+    <property name="reports.coverage" value="reports/coverage" />
+    <property name="app.servers" value="../appservers" />
+    
+    <property name="cargo.refid" value="cargoref01"/>
+    <property name="cargo.log.dir" value="tmp/cargolog"/>
+    <property name="cargo.config.dir" value="tmp/cargoconfig"/>
+    
+    <target name="with.tomcat">
+        <property name="cargo.container.id" value="tomcat5x" />
+        <property name="cargo.container.installer.url" 
+          value="http://www.apache.org/dist/tomcat/tomcat-5/v5.5.26/bin/apache-tomcat-5.5.26.zip"/>
+    </target>
+    
+    <target name="with.resin">
+        <property name="cargo.container.id" value="resin3x" />
+        <property name="cargo.container.installer.url" 
+          value="http://www.caucho.com/download/resin-3.1.5.zip"/>
+    </target>
+    
+    <target name="resolve">
+        <ivy:retrieve/>
+        <ivy:cachepath conf="main" pathid="lib.path.id" />
+        <ivy:cachepath conf="test" pathid="test.lib.path.id" />
+        <ivy:cachepath conf="functional-test" pathid="functional.test.lib.path.id" />
+        <ivy:cachepath conf="cargo" pathid="cargo.lib.path.id" />
+        <ivy:cachepath conf="coverage" pathid="coverage.lib.path.id" />
+        <ivy:cachepath conf="style" pathid="style.lib.path.id" />
+    </target>
+
+    <target name="init">
+        <mkdir dir="${build.dir}" />
+        <mkdir dir="${build.main}" />
+        <mkdir dir="${build.test}" />
+        <mkdir dir="${build.instrumented}" />
+        <mkdir dir="${build.functional.test}" />
+        <mkdir dir="${dist.dir}" />
+        <mkdir dir="${dist.dir}/jars" />
+        <mkdir dir="${reports.dir}" />
+        <mkdir dir="${reports.tests}" />
+        <mkdir dir="${app.servers}" />
+    </target>
+
+    <target name="style" depends="init,resolve">
+        <taskdef classpathref="style.lib.path.id" resource="checkstyletask.properties" />
+        <checkstyle config="resources/checkstyle-rules.xml">
+          <fileset dir="${src.dir}" includes="**/*.java"/>
+          <formatter type="plain"/>
+        </checkstyle>
+    </target>
+
+    <target name="compile" depends="init,resolve,style">
+        <javac srcdir="${src.dir}" destdir="${build.main}" classpathref="lib.path.id" debug="true"/>
+    </target>
+
+    <target name="coverage.init" depends="init">
+        <taskdef classpathref="coverage.lib.path.id" resource="tasks.properties" />
+        <property name="coverage.data.file" value="${build.dir}/cobertura.ser" />
+    </target>
+
+    <target name="test" depends="init,compile, coverage.init">
+        <javac srcdir="${test.dir}" destdir="${build.test}" >
+            <classpath>
+                <pathelement location="${build.main}"/>
+                <pathelement location="${build.test}"/>
+                <path refid="test.lib.path.id"/>
+            </classpath>
+        </javac>
+
+        <delete file="${coverage.data.file}" />
+        <cobertura-instrument datafile="${coverage.data.file}" todir="${build.instrumented}">
+            <fileset dir="${build.main}">
+                <include name="**/*.class" />
+            </fileset>
+        </cobertura-instrument>                    
+        
+        <junit fork="yes" forkmode="once" failureproperty="JunitFailed" printsummary="yes">
+            <sysproperty key="net.sourceforge.cobertura.datafile"
+                    file="${coverage.data.file}" />
+            <classpath>
+                <pathelement location="${build.instrumented}"/>
+                <pathelement location="${build.main}"/>
+                <pathelement location="${build.test}"/>
+                <path refid="test.lib.path.id"/>
+                <path refid="coverage.lib.path.id" />
+            </classpath>
+            <formatter type="xml"/>
+            <formatter type="plain"/>
+            <batchtest  todir="${reports.tests}">
+                <fileset dir="${test.dir}">
+                      <include name="**/*Test*.java"/>
+                </fileset>
+            </batchtest>
+        </junit>
+        <fail if="JunitFailed" message="JUnit failures" />
+        
+        <cobertura-report datafile="${coverage.data.file}" format="html" destdir="${reports.coverage}" srcdir="${src.dir}" />
+        <cobertura-check datafile="${coverage.data.file}" branchrate="100" totalbranchrate="100" totallinerate="100" />
+    </target>
+
+    <target name="dist" depends="init, test">
+            <jar destfile="${dist.dir}/jars/${appName}.jar"
+                   basedir="${build.main}"
+              />
+            
+            <war destfile="${dist.dir}/${appName}.war"
+                        webxml="src/main/webapp/WEB-INF/web.xml"> 
+                <fileset dir="src/main/webapp/"/>
+                  <lib dir="lib">
+                  </lib>
+                  <lib dir="${dist.dir}/jars/">
+                  </lib>
+            </war>
+        
+    </target>
+        
+    <target name="deploy.functional.tests" depends="init, dist, cargo.start, functional.tests, cargo.stop">
+    </target>
+        
+    <target name="cargo.init" depends="init">
+        <taskdef classpathref="cargo.lib.path.id" resource="cargo.tasks" />
+    </target>
+
+    <target name="cargo.start" depends="init, cargo.init, with.tomcat">
+        <delete dir="${cargo.config.dir}" />
+        <mkdir dir="${cargo.log.dir}"/>
+        <mkdir dir="${cargo.config.dir}"/>
+
+        <echo message="Starting Cargo..."/>
+        <echo message="Using war = ${dist.dir}/${appName}.war "/>        
+        <cargo  containerId="${cargo.container.id}" 
+                wait="false"
+                output="${cargo.log.dir}/output.log" 
+                log="${cargo.log.dir}/cargo.log" 
+                action="start" 
+                id="${cargo.refid}">
+            <zipurlinstaller installurl="${cargo.container.installer.url}"
+                installdir="${app.servers}"
+            />
+            <configuration home="${cargo.config.dir}"> 
+                <property name="cargo.servlet.port" value="8080"/>
+                <property name="cargo.logging" value="high"/>
+                <deployable type="war" file="${dist.dir}/${appName}.war"/>
+            </configuration>
+          </cargo>
+        </target>
+
+        <target name="functional.tests" depends="init, cargo.init">
+            <javac srcdir="${functional.test.dir}" destdir="${build.functional.test}" >
+                <classpath>
+                    <pathelement location="${build.main}"/>
+                    <pathelement location="${build.test}"/>
+                    <pathelement location="${build.functional.test}"/>
+                    <path refid="functional.test.lib.path.id"/>
+                </classpath>
+            </javac>
+                                
+            <junit fork="yes" forkmode="once" failureproperty="JunitFailed" printsummary="yes">
+                <classpath>
+                    <pathelement location="${build.main}"/>
+                    <pathelement location="${build.test}"/>
+                    <pathelement location="${build.functional.test}"/>
+                    <path refid="functional.test.lib.path.id"/>
+                </classpath>
+                <formatter type="xml"/>
+                <formatter type="plain"/>
+                <batchtest  todir="${reports.tests}">
+                    <fileset dir="${functional.test.dir}">
+                        <include name="**/*Test*.java"/>
+                    </fileset>
+                </batchtest>
+            </junit>
+            <fail if="JunitFailed" message="JUnit failures" />
+        </target>
+
+        <target name="cargo.stop" depends="init, cargo.init">
+            <cargo containerId="${cargo.container.id}" action="stop" 
+               refid="${cargo.refid}"/>    
+        </target>
+    
+        <target name="clean" >
+            <delete dir="${build.dir}" />
+            <delete dir="${dist.dir}" />
+            <delete dir="${reports.dir}" />
+            <delete dir="${cargo.log.dir}" /> 
+            <delete dir="${cargo.config.dir}"/>
+            <delete dir="tmp"/>
+        </target>
+
+        <target name="clobber" depends="clean">
+            <delete dir="lib" /> 
+        </target>
+</project>
